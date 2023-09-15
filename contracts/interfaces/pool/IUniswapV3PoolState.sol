@@ -72,7 +72,8 @@ interface IUniswapV3PoolState {
             int56 tickCumulativeOutside,
             uint160 secondsPerLiquidityOutsideX128,
             uint32 secondsOutside,
-            bool initialized
+            bool initialized,
+            uint128 limitOrderLiquidity
         );
 
     /// @notice Returns 256 packed tick initialized boolean values. See TickBitmap for more information
