@@ -12,31 +12,35 @@ Uniswap V3 is a popular decentralized exchange protocol that allows users to pro
 
 3. `collectLimitOrder(address recipient, int24 tickLower)`: Once the limit order is filled, users can collect the swapped amount using this function. Collection is disallowed if the order is not filled or only partially filled.
 
-## Working
+## Modifications done
 
 ### Minimal Code Changes
 
-Have made minimal changes to the existing Uniswap V3 codebase to integrate these features seamlessly except current swap implementation, ensuring compatibility with the core protocol. To ensure this works fluently, the pool contract is the contract having owner of positions of all limit order and mainitainingmost info above the current working protocol.
+Have made minimal changes to the existing Uniswap V3 codebase to integrate these features seamlessly except current swap implementation, ensuring compatibility with the core protocol. To ensure this works fluently, the pool contract is the contract having owner of positions of all limit orders and maintaining most info above the current working protocol.
 
 ### Changes to swap implementation
 
-The swap implementation that exists uses a loop to iterate over ticks until the specified amount of swap is used, So the only change that has been done to code is that if tick is crossed, liquidate its position owned by the contract. Hence automating the process of removing liquidity specified in problem statement. And tokens can be collected.
+The swap implementation that exists uses a loop to iterate over ticks until the specified amount of swap is used, So the only change that has been done to the code is that if the tick is crossed, liquidate its position owned by the contract. Hence automating the process of removing liquidity specified in the problem statement. And tokens can be collected.
 
 ## Improvements
 
-There are several ways how this code can be improved, some of them are:
-- Move the info related to tick to library and inside its info struct.
-- Current contract exceeds maximum size supported by ethereum, reduce it.
-- Move most code to library.
-- In current implementation to create limit order you have to approve pool contract, which is not optimal, which needs to be moved to periphery.
-- Imrove gas efficiency.
+There are several ways this code can be improved, some of them are:
+- Move the info related to the tick to the library and inside its info struct.
+- Current contract exceeds maximum size supported by Ethereum, reduce it.
+- Move most code to the library.
+- In the current implementation to create a limit order you have to approve the pool contract, which is not optimal and needs to be moved to the periphery.
+- Improve gas efficiency.
 - Update tests according to new deployment costs and gas usage. 
 
 
+## Install dependencies
+
+```bash
+yarn install
+```
+
 ## Run tests for limit orders
 
-After install all requied libraries are installed run:
-
-    ```bash
-    yarn hardhat test test/LimitOrder.ts
-    ```
+```bash
+yarn hardhat test test/LimitOrder.ts
+```
