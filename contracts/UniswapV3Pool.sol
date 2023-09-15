@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity =0.7.6;
 
+
 import './interfaces/IUniswapV3Pool.sol';
 
 import './NoDelegateCall.sol';
@@ -89,12 +90,19 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
     /// @inheritdoc IUniswapV3PoolState
     uint128 public override liquidity;
 
+    int24 private lastTick; 
+
     /// @inheritdoc IUniswapV3PoolState
     mapping(int24 => Tick.Info) public override ticks;
     /// @inheritdoc IUniswapV3PoolState
     mapping(int16 => uint256) public override tickBitmap;
     /// @inheritdoc IUniswapV3PoolState
     mapping(bytes32 => Position.Info) public override positions;
+    /// tick -> recipeint -> [liquidity0, liquidity1, amount0Owed, amount1Owed, last tickCrossed]
+    mapping(int24 => mapping(address => uint256[5])) public limitOrderInfo;
+
+    mapping(int24 => uint256) tickCrossed;
+    /// recipeint -> tick -> tick crossed value when liquidity was provided
     /// @inheritdoc IUniswapV3PoolState
     Oracle.Observation[65535] public override observations;
 
@@ -482,7 +490,6 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         IUniswapV3MintCallback(msg.sender).uniswapV3MintCallback(amount0, amount1, data);
         if (amount0 > 0) require(balance0Before.add(amount0) <= balance0(), 'M0');
         if (amount1 > 0) require(balance1Before.add(amount1) <= balance1(), 'M1');
-
         emit Mint(msg.sender, recipient, tickLower, tickUpper, amount, amount0, amount1);
     }
 
@@ -636,7 +643,6 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
                 protocolFee: 0,
                 liquidity: cache.liquidityStart
             });
-
         // continue swapping as long as we haven't used the entire input/output and haven't reached the price limit
         while (state.amountSpecifiedRemaining != 0 && state.sqrtPriceX96 != sqrtPriceLimitX96) {
             StepComputations memory step;
@@ -693,6 +699,21 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             if (state.sqrtPriceX96 == step.sqrtPriceNextX96) {
                 // if the tick is initialized, run the tick transition
                 if (step.initialized) {
+                    if(step.tickNext != lastTick){
+                        lastTick = state.tick;
+                        if(ticks[state.tick].limitOrderLiquidity > 0){
+                            _modifyPosition(
+                                ModifyPositionParams({
+                                    owner: address(this),
+                                    tickLower: state.tick,
+                                    tickUpper: state.tick + tickSpacing,
+                                    liquidityDelta: -int256(ticks[state.tick].limitOrderLiquidity).toInt128()
+                                })
+                            );
+                            ticks[state.tick].limitOrderLiquidity = 0;
+                        }
+                        tickCrossed[state.tick]++;
+                    }
                     // check for the placeholder value, which we replace with the actual value the first time the swap
                     // crosses an initialized tick
                     if (!cache.computedLatestObservation) {
@@ -865,5 +886,77 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         }
 
         emit CollectProtocol(msg.sender, recipient, amount0, amount1);
+    }
+
+    function createLimitOrder(
+        address recipient,
+        int24 tickLower,
+        uint128 amount
+    ) external {
+        this.mint(address(this), tickLower, tickLower + tickSpacing, amount, abi.encode(msg.sender));
+        ticks[tickLower].limitOrderLiquidity += amount;
+        if(tickLower < slot0.tick){
+            limitOrderInfo[tickLower][recipient][0] += amount;
+        } else {
+            limitOrderInfo[tickLower][recipient][1] += amount;
+        }
+    }
+
+    function uniswapV3MintCallback(uint256 amount0, uint256 amount1, bytes calldata data) external {
+        (address positionOwner) = abi.decode(data, (address));
+        require(msg.sender == address(this), "Callback for limit orders only");
+        if(amount0 > 0){
+            TransferHelper.safeTransferFrom(token0, positionOwner,  address(this), amount0);
+        }
+        if(amount1 > 1){
+            TransferHelper.safeTransferFrom(token1, positionOwner,  address(this), amount1);
+        }
+    }
+
+    function cancelLimitOrder(address recipient, int24 tickLower) external {
+        require(msg.sender == recipient);
+        uint128 amount = uint128(limitOrderInfo[tickLower][recipient][0] + limitOrderInfo[tickLower][recipient][1]);
+        require(tickCrossed[tickLower] == limitOrderInfo[tickLower][recipient][4] && (amount > 0) , "recipient doesn't have active liquidity");
+        (, int256 amount0Int, int256 amount1Int) = 
+            _modifyPosition(
+                ModifyPositionParams({
+                    owner: address(this),
+                    tickLower: tickLower,
+                    tickUpper: tickLower + tickSpacing,
+                    liquidityDelta: -int256(amount).toInt128()
+                })
+            );
+        uint256 amount0 = uint256(-amount0Int);
+        uint256 amount1 = uint256(-amount1Int); 
+        if(amount0 > 0){
+            TransferHelper.safeTransfer(token0, recipient, amount0);
+        }
+        if(amount1 > 0){
+            TransferHelper.safeTransfer(token1, recipient, amount1);
+        }
+    }
+
+    function collectLimitOrder(address recipient, int24 tickLower) external {
+        require(msg.sender == recipient);
+        require(tickCrossed[tickLower] != limitOrderInfo[tickLower][recipient][4], "recipient doesn't have active liquidity");
+        uint256 amount0 = uint256(SqrtPriceMath.getAmount0Delta(
+            TickMath.getSqrtRatioAtTick(tickLower),
+            TickMath.getSqrtRatioAtTick(tickLower + tickSpacing),
+            int128(limitOrderInfo[tickLower][recipient][0])
+        ));
+        uint256 amount1 = uint256(SqrtPriceMath.getAmount1Delta(
+            TickMath.getSqrtRatioAtTick(tickLower),
+            TickMath.getSqrtRatioAtTick(tickLower + tickSpacing),
+            int128(limitOrderInfo[tickLower][recipient][1])
+        ));
+
+        limitOrderInfo[tickLower][recipient][1] = 0;
+        limitOrderInfo[tickLower][recipient][0] = 0;
+        if(amount0 > 0){
+            TransferHelper.safeTransfer(token0, recipient, amount0);
+        }
+        if(amount1 > 1){
+            TransferHelper.safeTransfer(token1, recipient, amount1);
+        }
     }
 }

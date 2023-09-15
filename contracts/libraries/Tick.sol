@@ -34,6 +34,8 @@ library Tick {
         // true iff the tick is initialized, i.e. the value is exactly equivalent to the expression liquidityGross != 0
         // these 8 bits are set to prevent fresh sstores when crossing newly initialized ticks
         bool initialized;
+
+        uint128 limitOrderLiquidity;
     }
 
     /// @notice Derives max liquidity per tick from given tick spacing
